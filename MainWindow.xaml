@@ -1,0 +1,60 @@
+﻿<Window x:Class="ncm2mp3.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ncm2mp3"
+        mc:Ignorable="d"
+        Title="NCM转MP3工具" Height="600" Width="800"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 标题 -->
+        <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Text="NCM转MP3工具" 
+                   FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+
+        <!-- 源文件/文件夹选择 -->
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="源文件/文件夹:" VerticalAlignment="Center" Margin="5"/>
+        <TextBox Grid.Row="1" Grid.Column="1" x:Name="SourcePathTextBox" Margin="5" IsReadOnly="True"/>
+        <Button Grid.Row="1" Grid.Column="2" Content="浏览文件" Click="BrowseFileButton_Click" Margin="5"/>
+
+        <!-- 输出目录选择 -->
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="输出目录:" VerticalAlignment="Center" Margin="5"/>
+        <TextBox Grid.Row="2" Grid.Column="1" x:Name="OutputPathTextBox" Margin="5" IsReadOnly="True"/>
+        <Button Grid.Row="2" Grid.Column="2" Content="浏览目录" Click="BrowseDirectoryButton_Click" Margin="5"/>
+
+        <!-- 选项 -->
+        <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="5">
+            <CheckBox x:Name="DeleteSourceCheckBox" Content="转换后删除源文件" Margin="5"/>
+            <CheckBox x:Name="RecursiveCheckBox" Content="递归处理子文件夹" Margin="20,5,5,5"/>
+        </StackPanel>
+
+        <!-- 转换按钮 -->
+        <Button Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3" Content="开始转换" 
+                x:Name="ConvertButton" Click="ConvertButton_Click" 
+                Height="40" FontSize="16" Margin="0,10,0,10"/>
+
+        <!-- 日志输出 -->
+        <TextBox Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3" x:Name="LogTextBox"
+                 IsReadOnly="True" VerticalScrollBarVisibility="Auto" 
+                 HorizontalScrollBarVisibility="Auto" Margin="5"/>
+
+        <!-- 进度条 -->
+        <ProgressBar Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="3" x:Name="ProgressBar"
+                     Height="20" Minimum="0" Maximum="100" Value="0" Margin="5"/>
+    </Grid>
+</Window>
