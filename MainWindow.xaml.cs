@@ -200,10 +200,11 @@ public partial class MainWindow : Window
             
             // 构建命令行参数
             string arguments = $"\"{ncmFilePath}\" -o \"{outputDir}\"";
-            if (deleteSource)
-            {
-                arguments += " -m";
-            }
+            // 不再通过命令行参数删除，而是在程序中安全地处理删除操作
+            // if (deleteSource)
+            // {  
+            //     arguments += " -m"; // 移除这个参数，避免可能的冲突
+            // }
             
             // 创建进程
             ProcessStartInfo startInfo = new ProcessStartInfo
@@ -264,12 +265,53 @@ public partial class MainWindow : Window
                     {
                         try
                         {
-                            File.Delete(ncmFilePath);
-                            Log($"已删除源文件: {System.IO.Path.GetFileName(ncmFilePath)}");
+                            // 添加重试逻辑，确保文件可以被删除
+                            int retryCount = 3;
+                            bool deleted = false;
+                            
+                            for (int i = 0; i < retryCount; i++)
+                            {
+                                try
+                                {
+                                    // 先检查文件是否存在
+                                    if (File.Exists(ncmFilePath))
+                                    {
+                                        // 尝试释放文件可能的锁定
+                                        using (var fileStream = new FileStream(ncmFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                                        {
+                                            // 如果能打开文件，则关闭并删除
+                                        }
+                                        
+                                        File.Delete(ncmFilePath);
+                                        Log($"已删除源文件: {System.IO.Path.GetFileName(ncmFilePath)}");
+                                        deleted = true;
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        Log($"源文件不存在: {System.IO.Path.GetFileName(ncmFilePath)}");
+                                        deleted = true;
+                                        break;
+                                    }
+                                }
+                                catch (IOException)
+                                {
+                                    // 文件可能被锁定，等待一段时间后重试
+                                    if (i < retryCount - 1)
+                                    {
+                                        await Task.Delay(500);
+                                    }
+                                }
+                            }
+                            
+                            if (!deleted)
+                            {
+                                Log($"无法删除源文件（重试多次失败）: {System.IO.Path.GetFileName(ncmFilePath)}");
+                            }
                         }
                         catch (Exception ex)
                         {
-                            Log($"无法删除源文件: {ex.Message}");
+                            Log($"删除源文件时发生错误: {ex.Message}");
                         }
                     }
                 }
