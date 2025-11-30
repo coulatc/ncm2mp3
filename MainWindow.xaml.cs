@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -40,6 +41,9 @@ public partial class MainWindow : Window
         {
             Log("警告: ncmdump.exe 不存在，将在转换时尝试下载。");
         }
+        
+        // 初始化最大并发线程数为CPU核心数的2倍，但至少为2，最多为16
+        _maxConcurrency = Math.Min(Math.Max(Environment.ProcessorCount * 2, 2), 16);
     }
 
     private void BrowseFileButton_Click(object sender, RoutedEventArgs e)
@@ -164,34 +168,121 @@ public partial class MainWindow : Window
         });
     }
 
+    // 线程安全的计数器，用于跟踪处理进度
+    private volatile int _processedCount = 0;
+    private readonly object _processedCountLock = new object();
+    private int _totalFiles = 0;
+    
+    // 配置的最大并发线程数
+    private int _maxConcurrency;
+    
+    // 获取当前配置的最大并发线程数
+    private int MaxConcurrency => _maxConcurrency;
+    
+    // 线程安全的计数器，用于跟踪处理结果
+    private volatile int _successCount = 0;
+    private volatile int _errorCount = 0;
+    
     private async Task ProcessDirectoryAsync(string sourceDir, string outputDir, bool recursive)
     {
         // 获取所有ncm文件
         var ncmFiles = Directory.GetFiles(sourceDir, "*.ncm", recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
         
         Log($"找到 {ncmFiles.Length} 个NCM文件");
+        Log($"使用多线程模式，最大并发线程数: {MaxConcurrency}");
         
-        int processedCount = 0;
-        foreach (var ncmFile in ncmFiles)
+        // 重置计数器
+        _processedCount = 0;
+        _successCount = 0;
+        _errorCount = 0;
+        _totalFiles = ncmFiles.Length;
+        
+        // 使用SemaphoreSlim限制并发数量
+        using (SemaphoreSlim semaphore = new SemaphoreSlim(MaxConcurrency))
         {
-            await ProcessSingleFileAsync(ncmFile, outputDir);
-            
-            processedCount++;
-            double progress = (double)processedCount / ncmFiles.Length * 100;
-            _dispatcher.Invoke(() =>
+            // 创建任务列表
+            var tasks = ncmFiles.Select(async file =>
             {
-                ProgressBar.Value = progress;
+                await semaphore.WaitAsync();
+                try
+                {
+                    bool success = await ProcessSingleFileAsync(file, outputDir);
+                    
+                    // 更新处理结果统计
+                    if (success)
+                    {
+                        Interlocked.Increment(ref _successCount);
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref _errorCount);
+                    }
+                    
+                    // 更新处理进度
+                    UpdateProgress();
+                }
+                catch (Exception ex)
+                {
+                    Log($"处理文件时出错: {System.IO.Path.GetFileName(file)}, 错误: {ex.Message}");
+                    Interlocked.Increment(ref _errorCount);
+                    // 仍然更新进度，避免进度条卡住
+                    UpdateProgress();
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
             });
+            
+            // 等待所有任务完成
+            await Task.WhenAll(tasks);
+        }
+        
+        // 输出处理结果统计
+        Log($"多线程处理完成！成功: {_successCount}, 失败: {_errorCount}, 总计: {_totalFiles}");
+    }
+    
+    private void UpdateProgress()
+    {
+        int count;
+        double progress;
+        int success;
+        int error;
+        
+        lock (_processedCountLock)
+        {
+            count = ++_processedCount;
+            progress = _totalFiles > 0 ? (double)count / _totalFiles * 100 : 0;
+            success = _successCount;
+            error = _errorCount;
+        }
+        
+        // 更新UI
+        _dispatcher.Invoke(() =>
+        {
+            ProgressBar.Value = progress;
+            // 这里可以添加更多UI更新，如进度文本
+        });
+        
+        // 每处理10%的文件或处理完成时，输出详细进度
+        if (count == _totalFiles || count % Math.Max(1, _totalFiles / 10) == 0)
+        {
+            Log($"进度: {count}/{_totalFiles} ({progress:F1}%), 成功: {success}, 失败: {error}");
         }
     }
 
-    private async Task ProcessSingleFileAsync(string ncmFilePath, string outputDir)
+    // 线程安全的锁对象，用于保护可能的共享资源访问
+    private readonly object _fileProcessLock = new object();
+    
+    private async Task<bool> ProcessSingleFileAsync(string ncmFilePath, string outputDir)
     {
-        Log($"正在处理: {System.IO.Path.GetFileName(ncmFilePath)}");
+        // 本地变量存储文件信息，避免在多线程中重复获取
+        string fileName = System.IO.Path.GetFileName(ncmFilePath);
+        Log($"正在处理: {fileName}");
         
         try
         {
-            // 获取DeleteSourceCheckBox的值
+            // 获取DeleteSourceCheckBox的值，使用线程安全的方式
             bool deleteSource = false;
             _dispatcher.Invoke(() =>
             {
@@ -258,72 +349,92 @@ public partial class MainWindow : Window
                 
                 if (process.ExitCode == 0)
                 {
-                    Log($"成功: {System.IO.Path.GetFileName(ncmFilePath)}");
+                    Log($"成功: {fileName}");
                     
                     // 如果需要删除源文件
                     if (deleteSource)
                     {
                         try
                         {
-                            // 添加重试逻辑，确保文件可以被删除
-                            int retryCount = 3;
-                            bool deleted = false;
-                            
-                            for (int i = 0; i < retryCount; i++)
-                            {
-                                try
-                                {
-                                    // 先检查文件是否存在
-                                    if (File.Exists(ncmFilePath))
-                                    {
-                                        // 尝试释放文件可能的锁定
-                                        using (var fileStream = new FileStream(ncmFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                                        {
-                                            // 如果能打开文件，则关闭并删除
-                                        }
-                                        
-                                        File.Delete(ncmFilePath);
-                                        Log($"已删除源文件: {System.IO.Path.GetFileName(ncmFilePath)}");
-                                        deleted = true;
-                                        break;
-                                    }
-                                    else
-                                    {
-                                        Log($"源文件不存在: {System.IO.Path.GetFileName(ncmFilePath)}");
-                                        deleted = true;
-                                        break;
-                                    }
-                                }
-                                catch (IOException)
-                                {
-                                    // 文件可能被锁定，等待一段时间后重试
-                                    if (i < retryCount - 1)
-                                    {
-                                        await Task.Delay(500);
-                                    }
-                                }
-                            }
-                            
-                            if (!deleted)
-                            {
-                                Log($"无法删除源文件（重试多次失败）: {System.IO.Path.GetFileName(ncmFilePath)}");
-                            }
+                            // 在多线程环境下安全地删除文件，使用锁保护
+                            await SafeDeleteSourceFileAsync(ncmFilePath, fileName);
                         }
                         catch (Exception ex)
                         {
                             Log($"删除源文件时发生错误: {ex.Message}");
                         }
                     }
+                    
+                    return true;
                 }
                 else
                 {
-                    Log($"失败: {System.IO.Path.GetFileName(ncmFilePath)}，退出码: {process.ExitCode}");
+                    Log($"失败: {fileName}，退出码: {process.ExitCode}");
+                    return false;
                 }
             }
         }
         catch (Exception ex)
         {
-            Log($"处理文件时发生错误: {ex.Message}");
+            Log($"处理文件时发生错误: {fileName}, 错误: {ex.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// 多线程安全的源文件删除方法
+    /// </summary>
+    private async Task SafeDeleteSourceFileAsync(string filePath, string fileName)
+    {
+        // 添加重试逻辑，确保文件可以被删除
+        int retryCount = 3;
+        bool deleted = false;
+        
+        for (int i = 0; i < retryCount; i++)
+        {
+            try
+            {
+                // 先检查文件是否存在
+                if (File.Exists(filePath))
+                {
+                    // 尝试释放文件可能的锁定
+                    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        // 如果能打开文件，则关闭并删除
+                    }
+                    
+                    // 使用锁确保文件删除操作的原子性
+                    lock (_fileProcessLock)
+                    {
+                        if (File.Exists(filePath)) // 再次检查，避免在等待锁的过程中文件被其他线程删除
+                        {
+                            File.Delete(filePath);
+                            Log($"已删除源文件: {fileName}");
+                            deleted = true;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    Log($"源文件不存在: {fileName}");
+                    deleted = true;
+                    break;
+                }
+            }
+            catch (IOException)
+            {
+                // 文件可能被锁定，等待一段时间后重试
+                if (i < retryCount - 1)
+                {
+                    await Task.Delay(500);
+                }
+            }
+        }
+        
+        if (!deleted)
+        {
+            Log($"无法删除源文件（重试多次失败）: {fileName}");
         }
     }
 
